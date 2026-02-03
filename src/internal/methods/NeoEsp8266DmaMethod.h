@@ -49,9 +49,23 @@ public:
             0b1110100010001000, 0b1110100010001110, 0b1110100011101000, 0b1110100011101110,
             0b1110111010001000, 0b1110111010001110, 0b1110111011101000, 0b1110111011101110,
         };
-
         return bitpatterns[value];
-    }
+	}
+	
+	static uint8_t Convert3StepHigh(uint8_t value)
+	{
+		const uint8_t bpHigh[8] = {0x92, 0x93, 0x9A, 0x9B, 0xD2, 0xD3, 0xDA, 0xDB};
+		return bpHigh[value];
+	}
+	static uint8_t Convert3StepMid(uint8_t value)
+	{
+		const uint8_t bpMid[4] = {0x49, 0x4D, 0x69, 0x6D};
+		return bpMid[value];
+	}
+	static uint8_t Convert3StepLow(uint8_t value)
+	{
+		const uint8_t bpLow[8] = {0x24, 0x26, 0x34, 0x36, 0xA4, 0xA6, 0xB4, 0xB6};	
+	}
 };
 
 class NeoEsp8266DmaInvertedPattern
@@ -70,10 +84,113 @@ public:
             0b0001011101110111, 0b0001011101110001, 0b0001011100010111, 0b0001011100010001,
             0b0001000101110111, 0b0001000101110001, 0b0001000100010111, 0b0001000100010001,
         };
-
         return bitpatterns[value];
     }
+	
+	static uint8_t Convert3StepHigh(uint8_t value)
+	{
+		const uint8_t bpHigh[8] = {0x6D, 0x6C, 0x65, 0x64, 0x2D, 0x2C, 0x25, 0x24};
+		return bpHigh[value];
+	}
+	static uint8_t Convert3StepMid(uint8_t value)
+	{
+		const uint8_t bpMid[4] = {0xB6, 0xB2, 0x96, 0x92};
+		return bpMid[value];
+	}
+	static uint8_t Convert3StepLow(uint8_t value)
+	{
+		const uint8_t bpLow[8] = {0xDB, 0xD9, 0xCB, 0xC9, 0x5B, 0x59, 0x4B, 0x49};	
+	}
 };
+
+// ESP8266 3 Step Fast encoding, the trickiest to implement.
+// Not quite as fast as the 4 step, but much faster than the original 3 step
+// Also the most complex to implement from the speed tester as the inverted method
+// is achieved using an inverted lookup table (or tables) with separate functions being 
+// referenced. There must also be a small speed implication for doing it like that.
+
+
+template<typename T_PATTERN> class NeoEsp8266Dma3StepFastEncode : public T_PATTERN
+{
+public:
+    const static size_t DmaBitsPerPixelBit = 3; // 3 step cadence, matches encoding
+
+    static size_t SpacingPixelSize(size_t sizePixel)
+    {
+        return sizePixel;
+    }
+
+    static void FillBuffers(uint8_t* i2sBuffer,
+        const uint8_t* data,
+        size_t sizeData,
+        [[maybe_unused]] size_t sizePixel)
+    {
+		uint8_t* pDma = i2sBuffer;
+		const uint8_t* pEnd = data + sizeData - 3;  // Encode 4 bytes at a time, make sure they are there
+		const uint8_t* pSrc = data;
+		uint8_t Src[4]; // used to store 4 data Bytes at a time and for up to 3 separate bytes to complete the frame
+		uint32_t* pSrc32 = reinterpret_cast<uint32_t*>(Src);
+		uint8_t Source[12]; // to store those 4 Bytes into 3 parts, 3 Low bits, 2 middle bits, 3 Low Bits
+		uint32_t* pSource32 = reinterpret_cast<uint32_t*>(Source);
+		
+		while (pSrc < pEnd) {
+			*(pSrc32) = (*(reinterpret_cast<const uint32_t*>(pSrc)));
+			pSrc += 4;
+
+			*(pSource32) = *(pSrc32) & 0x07070707;
+			*(pSrc32) = (*(pSrc32) & 0xF8F8F8F8) >> 3;
+			*(pSource32 + 1) = *(pSrc32) & 0x03030303;
+			*(pSource32 + 2) = (*(pSrc32) & 0xFCFCFCFC) >> 2;
+
+			*(pDma++) = T_PATTERN::Convert3StepHigh(Source[9]);  //bpHigh[Source[9]];
+			*(pDma++) = T_PATTERN::Convert3StepLow(Source[0]);   //bpLow[Source[0]];
+			*(pDma++) = T_PATTERN::Convert3StepMid(Source[4]);   //bpMid[Source[4]];
+			*(pDma++) = T_PATTERN::Convert3StepHigh(Source[8]);  //bpHigh[Source[8]];
+
+			*(pDma++) = T_PATTERN::Convert3StepMid(Source[6]);   //bpMid[Source[6]];
+			*(pDma++) = T_PATTERN::Convert3StepHigh(Source[10]); //bpHigh[Source[10]];
+			*(pDma++) = T_PATTERN::Convert3StepLow(Source[1]);   //bpLow[Source[1]];
+			*(pDma++) = T_PATTERN::Convert3StepMid(Source[5]);   //bpMid[Source[5]];
+
+			*(pDma++) = T_PATTERN::Convert3StepLow(Source[3]);   //bpLow[Source[3]];
+			*(pDma++) = T_PATTERN::Convert3StepMid(Source[7]);   //bpMid[Source[7]];
+			*(pDma++) = T_PATTERN::Convert3StepHigh(Source[11]); //bpHigh[Source[11]];
+			*(pDma++) = T_PATTERN::Convert3StepLow(Source[2]);   //bpLow[Source[2]];
+		}
+		
+		//  complete last few source bytes
+  
+		pEnd += 3;  // up the endpoint again
+		*(pSrc32) = 0; // clear the 32-bit
+		uint8_t i = 0;
+		while (pSrc < pEnd) {
+			Src[i++] = *(pSrc++);  // put them in a byte at a time, not reading any bytes we don't have
+		}
+		*(pSource32) = *(pSrc32) & 0x07070707;
+		*(pSrc32) = (*(pSrc32) & 0xF8F8F8F8) >> 3;
+		*(pSource32 + 1) = *(pSrc32) & 0x03030303;
+		*(pSource32 + 2) = (*(pSrc32) & 0xFCFCFCFC) >> 2;
+		if (i) {
+			*(pDma + 1) = T_PATTERN::Convert3StepLow(Source[0]);   //bpLow[Source[0]];
+			*(pDma + 2) = T_PATTERN::Convert3StepMid(Source[4]);   //bpMid[Source[4]];
+			*(pDma + 3) = T_PATTERN::Convert3StepHigh(Source[8]);  //bpHigh[Source[8]];
+			i--;    
+		}
+		if (i) {
+			*(pDma + 6) = T_PATTERN::Convert3StepLow(Source[1]);   //bpLow[Source[1]];
+			*(pDma + 7) = T_PATTERN::Convert3StepMid(Source[5]);   //bpMid[Source[5]];
+			*(pDma) = T_PATTERN::Convert3StepHigh(Source[9]);      //bpHigh[Source[9]];
+			i--;
+		}
+		if (i) {
+			*(pDma + 11) = T_PATTERN::Convert3StepLow(Source[2]);  //bpLow[Source[2]];
+			*(pDma + 4) = T_PATTERN::Convert3StepMid(Source[6]);   //bpMid[Source[6]];
+			*(pDma + 5) = T_PATTERN::Convert3StepHigh(Source[10]); //bpHigh[Source[10]];			
+		}
+	}
+};
+
+
 
 template<typename T_PATTERN> class NeoEsp8266Dma3StepEncode : public T_PATTERN
 {
@@ -302,10 +419,17 @@ private:
 
 };
 
+//#define NPB_CONF_3STEPFAST_CADENCE
+
 #if defined(NPB_CONF_4STEP_CADENCE)
 
 template <typename T_PATTERN>
 using NeoEsp8266I2sCadence = NeoEsp8266Dma4StepEncode<T_PATTERN>;
+
+#elif defined(NPB_CONF_3STEPFAST_CADENCE)
+
+template <typename T_PATTERN>
+using NeoEsp8266I2sCadence = NeoEsp8266Dma3StepFastEncode<T_PATTERN>
 
 #else
 

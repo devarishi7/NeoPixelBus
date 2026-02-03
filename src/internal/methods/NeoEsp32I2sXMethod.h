@@ -177,6 +177,135 @@ public:
     }
 };
 
+// 3 Step cadence but much faster encoding up to 4 times as fast for x8 and 2.5 times as fast for x16
+// Since these methods are typically used for larger pixel counts these differences can result in 
+// savings of milliseconds 8x4 universe (8*680) pixels for the x8 method is something like 1450us vs 560us
+// 16x4 universe results in 4400us vs 11000us. 
+
+class NeoEspI2sMuxBusSize8Bit3StepFast
+{
+public:
+    NeoEspI2sMuxBusSize8Bit3StepFast() {};
+
+    const static size_t MuxBusDataSize = 1;
+    const static size_t DmaBitsPerPixelBit = 3; // 3 step cadence, matches encoding
+
+    // by using a 3 step cadence, the dma data can't be updated with a single OR operation as
+    //    its value resides across a non-uint16_t aligned 3 element type, so it requires two separate OR
+    //    operations to update a single pixel bit, the last element can be skipped as its always 0
+    static void EncodeIntoDma(uint8_t* dmaBuffer, const uint8_t* data, size_t sizeData, uint8_t muxId)
+    {
+		uint32_t *pDma32 = reinterpret_cast<uint32_t*>(dmaBuffer);
+		const uint8_t* pValue = data;
+		const uint8_t* pEnd = pValue + sizeData;
+
+		#if defined(CONFIG_IDF_TARGET_ESP32S2)
+		uint32_t lookupNibble[] = {
+			0x01000001, 0x00010000, 0x00000100,    0x01000001, 0x00010000, 0x00010100,
+			0x01000001, 0x01010000, 0x00000100,    0x01000001, 0x01010000, 0x00010100,
+			0x01000001, 0x00010001, 0x00000100,    0x01000001, 0x00010001, 0x00010100,
+			0x01000001, 0x01010001, 0x00000100,    0x01000001, 0x01010001, 0x00010100,
+			0x01000101, 0x00010000, 0x00000100,    0x01000101, 0x00010000, 0x00010100,
+			0x01000101, 0x01010000, 0x00000100,    0x01000101, 0x01010000, 0x00010100,
+			0x01000101, 0x00010001, 0x00000100,    0x01000101, 0x00010001, 0x00010100,
+			0x01000101, 0x01010001, 0x00000100,    0x01000101, 0x01010001, 0x00010100
+		};
+		#else
+		uint32_t lookupNibble[] = {
+			0x00010100, 0x00000001, 0x01000000,    0x00010100, 0x00000001, 0x01000001,
+			0x00010100, 0x00000101, 0x01000000,    0x00010100, 0x00000101, 0x01000001,
+			0x00010100, 0x00010001, 0x01000000,    0x00010100, 0x00010001, 0x01000001,
+			0x00010100, 0x00010101, 0x01000000,    0x00010100, 0x00010101, 0x01000001,
+			0x01010100, 0x00000001, 0x01000000,    0x01010100, 0x00000001, 0x01000001,
+			0x01010100, 0x00000101, 0x01000000,    0x01010100, 0x00000101, 0x01000001,
+			0x01010100, 0x00010001, 0x01000000,    0x01010100, 0x00010001, 0x01000001,
+			0x01010100, 0x00010101, 0x01000000,    0x01010100, 0x00010101, 0x01000001
+		};
+		#endif
+
+		for (uint8_t i = 0; i < 48; i++) {  // shift the table to the proper bit
+			lookupNibble[i] <<= muxId;
+		}
+
+		while (pValue < pEnd) {
+			uint8_t value = *(pValue++);
+			uint8_t nibble = (value >> 4) * 3;
+			*(pDma32++) |= lookupNibble[nibble++];
+			*(pDma32++) |= lookupNibble[nibble++];
+			*(pDma32++) |= lookupNibble[nibble];
+
+			nibble = (value & 0xF) * 3;
+			*(pDma32++) |= lookupNibble[nibble++];
+			*(pDma32++) |= lookupNibble[nibble++];
+			*(pDma32++) |= lookupNibble[nibble];
+		}
+    }
+};
+
+
+class NeoEspI2sMuxBusSize16Bit3StepFast
+{
+public:
+    NeoEspI2sMuxBusSize16Bit3StepFast() {};
+
+    const static size_t MuxBusDataSize = 2;
+    const static size_t DmaBitsPerPixelBit = 3; // 3 step cadence, matches encoding
+
+    // by using a 3 step cadence, the dma data can't be updated with a single OR operation as
+    //    its value resides across a non-uint32_t aligned 3 element type, so it requires two seperate OR
+    //    operations to update a single pixel bit, the last element can be skipped as its always 0
+    static void EncodeIntoDma(uint8_t* dmaBuffer, const uint8_t* data, size_t sizeData, uint8_t muxId)
+    {
+		uint32_t *pDma32 = reinterpret_cast<uint32_t*>(dmaBuffer);
+		const uint8_t* pValue = data;
+		const uint8_t* pEnd = pValue + sizeData;
+		uint8_t bitty[4];
+
+#if defined(CONFIG_IDF_TARGET_ESP32S2)
+		uint32_t lookupBitty[] = {
+		0x00000001, 0x00010000, 0x00000000, 0x0,   0x00000001, 0x00010000, 0x00000001, 0x0,
+		0x00010001, 0x00010000, 0x00000000, 0x0,   0x00010001, 0x00010000, 0x00000001
+		};
+#else
+		uint32_t lookupBitty[] = {
+		0x00010000, 0x00000001, 0x00000000, 0x0,   0x00010000, 0x00000001, 0x00010000, 0x0,
+		0x00010001, 0x00000001, 0x00000000, 0x0,   0x00010001, 0x00000001, 0x00010000
+		};
+#endif
+
+		for (uint8_t i = 0; i < 15; i++) {  // shift the table to the proper bit
+			lookupBitty[i] <<= muxId;
+		}
+
+		while (pValue < pEnd) {
+			uint8_t value = *(pValue++);
+			bitty[3] = (value & 0x3) << 2;
+			bitty[2] = value & 0xC;
+			value >>= 2;
+			bitty[1] = value & 0xC;
+			value >>= 2;
+			bitty[0] = value & 0xC;
+
+			*(pDma32++) |= lookupBitty[bitty[0]++];
+			*(pDma32++) |= lookupBitty[bitty[0]++];
+			*(pDma32++) |= lookupBitty[bitty[0]];
+
+			*(pDma32++) |= lookupBitty[bitty[1]++];
+			*(pDma32++) |= lookupBitty[bitty[1]++];
+			*(pDma32++) |= lookupBitty[bitty[1]];
+
+			*(pDma32++) |= lookupBitty[bitty[2]++];
+			*(pDma32++) |= lookupBitty[bitty[2]++];
+			*(pDma32++) |= lookupBitty[bitty[2]];
+
+			*(pDma32++) |= lookupBitty[bitty[3]++];
+			*(pDma32++) |= lookupBitty[bitty[3]++];
+			*(pDma32++) |= lookupBitty[bitty[3]];
+        }
+    }
+};
+ 
+
 
 // 4 step cadence, so pulses are 1/4 and 3/4 of pulse width
 //
@@ -868,6 +997,11 @@ private:
     uint8_t* _data;      // Holds LED color values
 };
 
+// #define NPB_CONF_3STEPFAST_CADENCE
+// can also be in the main sketch before the #include of the library, 
+// just not sure why anyone would want to use the slow method (the 4-step could be for 
+// rare compatibility issues)
+
 #if defined(NPB_CONF_4STEP_CADENCE)
 
 //------------------------------------
@@ -890,6 +1024,30 @@ typedef NeoEsp32I2sMuxBus<NeoEspI2sMonoBuffContext<NeoEspI2sMuxMap<uint8_t, NeoE
 typedef NeoEsp32I2sMuxBus<NeoEspI2sMonoBuffContext<NeoEspI2sMuxMap<uint16_t, NeoEspI2sMuxBusSize16Bit4Step>>, NeoEsp32I2sBusOne> NeoEsp32I2s1Mux16Bus;
 
 typedef NeoEsp32I2sMuxBus<NeoEspI2sDblBuffContext<NeoEspI2sMuxMap<uint8_t, NeoEspI2sMuxBusSize8Bit4Step>>, NeoEsp32I2sBusOne> NeoEsp32I2s1DblMux8Bus;
+
+#endif
+
+#elif defined(NPB_CONF_3STEPFAST_CADENCE)  // 3 step fast
+
+#if defined(CONFIG_IDF_TARGET_ESP32S2)
+
+typedef NeoEsp32I2sMuxBus<NeoEspI2sMonoBuffContext<NeoEspI2sMuxMap<uint8_t, NeoEspI2sMuxBusSize8Bit3StepFast>>, NeoEsp32I2sBusZero> NeoEsp32I2s0Mux8Bus;
+typedef NeoEsp32I2sMuxBus<NeoEspI2sMonoBuffContext<NeoEspI2sMuxMap<uint16_t, NeoEspI2sMuxBusSize16Bit3StepFast>>, NeoEsp32I2sBusZero> NeoEsp32I2s0Mux16Bus;
+
+typedef NeoEsp32I2sMuxBus<NeoEspI2sDblBuffContext<NeoEspI2sMuxMap<uint8_t, NeoEspI2sMuxBusSize8Bit3StepFast>>, NeoEsp32I2sBusZero> NeoEsp32I2s0DblMux8Bus;
+
+typedef NeoEsp32I2sXMethodBase<NeoBitsSpeedWs2812x, NeoEsp32I2s0DblMux8Bus, NeoBitsNotInverted> NeoEsp32I2s0X8DblWs2812xMethod;
+
+#else
+
+typedef NeoEsp32I2sMuxBus<NeoEspI2sMonoBuffContext<NeoEspI2sMuxMap<uint8_t, NeoEspI2sMuxBusSize16Bit3StepFast>>, NeoEsp32I2sBusZero> NeoEsp32I2s0Mux8Bus;
+typedef NeoEsp32I2sMuxBus<NeoEspI2sMonoBuffContext<NeoEspI2sMuxMap<uint16_t, NeoEspI2sMuxBusSize16Bit3StepFast>>, NeoEsp32I2sBusZero> NeoEsp32I2s0Mux16Bus;
+
+
+typedef NeoEsp32I2sMuxBus<NeoEspI2sMonoBuffContext<NeoEspI2sMuxMap<uint8_t, NeoEspI2sMuxBusSize8Bit3StepFast>>, NeoEsp32I2sBusOne> NeoEsp32I2s1Mux8Bus;
+typedef NeoEsp32I2sMuxBus<NeoEspI2sMonoBuffContext<NeoEspI2sMuxMap<uint16_t, NeoEspI2sMuxBusSize16Bit3StepFast>>, NeoEsp32I2sBusOne> NeoEsp32I2s1Mux16Bus;
+
+typedef NeoEsp32I2sMuxBus<NeoEspI2sDblBuffContext<NeoEspI2sMuxMap<uint8_t, NeoEspI2sMuxBusSize8Bit3StepFast>>, NeoEsp32I2sBusOne> NeoEsp32I2s1DblMux8Bus;
 
 #endif
 

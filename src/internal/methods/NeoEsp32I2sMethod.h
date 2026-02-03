@@ -175,6 +175,69 @@ public:
     }
 };
 
+// 3 step cadence but much faster using a 3-2-3 bits per byte lookup
+// Speed tested to be as quick as the 4-step and even with a smaller lookup table
+
+class NeoEsp32I2sCadence3StepFast
+{
+public:
+    const static size_t DmaBitsPerPixelBit = 3; // 3 step cadence, matches encoding
+
+    static void EncodeIntoDma(uint8_t* dmaBuffer, const uint8_t* data, size_t sizeData)
+    {
+		const uint8_t bpHigh[8] = {
+		0x92, 0x93, 0x9A, 0x9B, 0xD2, 0xD3, 0xDA, 0xDB
+		};
+		const uint8_t bpMid[4] = {
+		0x49, 0x4D, 0x69, 0x6D
+		};
+		const uint8_t bpLow[8] = {
+		0x24, 0x26, 0x34, 0x36, 0xA4, 0xA6, 0xB4, 0xB6
+		};
+
+		uint8_t* pDma = dmaBuffer;
+		const uint8_t* pEnd = data + sizeData - 1;  // Encode 4 bytes at a time, make sure they are there
+		const uint8_t* pSrc = data;
+		uint8_t Src[2]; // used to store 2 data Bytes at a time and for up to 1 separate byte to complete the frame
+		uint16_t* pSrc16 = reinterpret_cast<uint16_t*>(Src);
+		uint8_t Source[6]; // to store those 2 Bytes into 3 parts, 3 Low bits, 2 middle bits, 3 Low Bits
+		uint16_t* pSource16 = reinterpret_cast<uint16_t*>(Source);
+
+		while (pSrc < pEnd) {
+			*(pSrc16) = (*(reinterpret_cast<const uint16_t*>(pSrc)));
+			pSrc += 2;
+
+			*(pSource16) = *(pSrc16) & 0x0707;
+			*(pSrc16) = (*(pSrc16) & 0xF8F8) >> 3;
+			*(pSource16 + 1) = *(pSrc16) & 0x0303;
+			*(pSource16 + 2) = (*(pSrc16) & 0xFCFC) >> 2;
+
+			*(pDma++) = bpMid[Source[2]];
+			*(pDma++) = bpHigh[Source[4]];
+			*(pDma++) = bpHigh[Source[5]];
+			*(pDma++) = bpLow[Source[0]];
+			*(pDma++) = bpLow[Source[1]];
+			*(pDma++) = bpMid[Source[3]];
+		}
+		//  complete last few source bytes
+
+		pEnd ++;  // up the endpoint again
+		*(pSrc16) = 0; // clear the 16-bit
+		if (pSrc < pEnd) {
+			Src[0] = *(pSrc);  // put them in a byte at a time, not reading any bytes we don't have
+			*(pSource16) = *(pSrc16) & 0x0707;// The 8-bit or the 16 bit process is equally quick
+			*(pSrc16) = (*(pSrc16) & 0xF8F8) >> 3;
+			*(pSource16 + 1) = *(pSrc16) & 0x0303;
+			*(pSource16 + 2) = (*(pSrc16) & 0xFCFC) >> 2;
+
+			*(pDma + 3) = bpLow[Source[0]];
+			*(pDma) = bpMid[Source[2]];
+			*(pDma + 1) = bpHigh[Source[4]];
+		}
+	}
+};
+
+
 // --------------------------------------------------------
 template<typename T_SPEED, typename T_BUS, typename T_INVERT, typename T_CADENCE> class NeoEsp32I2sMethodBase
 {
@@ -335,9 +398,19 @@ private:
 
 };
 
+// #define NPB_CONF_3STEPFAST_CADENCE
+// can also be in the main sketch before the #include of the library, 
+// just not sure why anyone would want to use the slow method (the 4-step could be for 
+// rare compatibility issues)
+
+
 #if defined(NPB_CONF_4STEP_CADENCE)
 
 typedef NeoEsp32I2sCadence4Step NeoEsp32I2sCadence;
+
+#elif defined(NPB_CONF_3STEPFAST_CADENCE)
+
+typedef NeoEsp32I2sCadence3StepFast NeoEsp32I2sCadence;
 
 #else
 
