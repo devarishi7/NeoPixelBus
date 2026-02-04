@@ -179,8 +179,8 @@ public:
 
 // 3 Step cadence but much faster encoding up to 4 times as fast for x8 and 2.5 times as fast for x16
 // Since these methods are typically used for larger pixel counts these differences can result in 
-// savings of milliseconds 8x4 universe (8*680) pixels for the x8 method is something like 1450us vs 560us
-// 16x4 universe results in 4400us vs 11000us. 
+// savings of milliseconds 8x4 universe (8*680) pixels for the x8 method is something like 4280us vs 17700us
+// 16x4 universe results in 15800us vs 37100us. (on an ESP32S)
 
 class NeoEspI2sMuxBusSize8Bit3StepFast
 {
